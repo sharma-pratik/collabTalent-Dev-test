@@ -9,10 +9,10 @@ Original file is located at
 # **Final Code**
 """
 
-!pip install deepface
-!pip install transformers
-# !pip install tensorflow-gpu
-!pip install git+https://github.com/linto-ai/whisper-timestamped
+# !pip install deepface
+# !pip install transformers
+# # !pip install tensorflow-gpu
+# !pip install git+https://github.com/linto-ai/whisper-timestamped
 
 import gc
 import torch
@@ -22,7 +22,7 @@ from transformers import pipeline
 from collections import defaultdict
 import whisper_timestamped as whisper
 from moviepy.editor import VideoFileClip
-from datetime import datetime, timedelta
+from datetime import datetime
 
 def getAnalysis(videoPath):
 
@@ -30,13 +30,13 @@ def getAnalysis(videoPath):
     faceSentimentTimeFrame = {}
 
     # audio from video
-    output_audio_path = 'test2.wav'
+    output_audio_path = 'test.wav'
     videoClip = VideoFileClip(videoPath)
     audio_clip = videoClip.audio
     audio_clip.write_audiofile(output_audio_path, codec='pcm_s16le')
 
     # audio analysis
-    audio = whisper.load_audio("test2.wav")
+    audio = whisper.load_audio("test.wav")
     model = whisper.load_model("medium", device="cuda")
     result = whisper.transcribe(model, audio, language="en", detect_disfluencies=True)
     del model
@@ -63,18 +63,23 @@ def getAnalysis(videoPath):
 
             try:
                 res = DeepFace.analyze(frame, actions=["emotion"])
-                if res[0]["dominant_emotion"] == "neutral":
-                    if res[0]["emotion"][res[0]["dominant_emotion"]] > 80:
-                        faceSentimentTimeFrame[key][start + round(tstamp * 1000) / 1000] = "neutral"
-                        faceEmotionTimeFrame[key][start + round(tstamp * 1000) / 1000] = "neutral"
-                elif res[0]["dominant_emotion"] in ["happy", "surprise"]:
-                    if res[0]["emotion"][res[0]["dominant_emotion"]] > 80:
-                        faceSentimentTimeFrame[key][start + round(tstamp * 1000) / 1000] = "positive"
-                        faceEmotionTimeFrame[key][start + round(tstamp * 1000) / 1000] = res[0]["dominant_emotion"]
-                elif res[0]["dominant_emotion"] in ["angry", "sad", "fear"]:
-                    if res[0]["emotion"][res[0]["dominant_emotion"]] > 80:
-                        faceSentimentTimeFrame[key][start + round(tstamp * 1000) / 1000] = "negative"
-                        faceEmotionTimeFrame[key][start + round(tstamp * 1000) / 1000] = res[0]["dominant_emotion"]
+                emotion = res[0]["dominant_emotion"]
+                round_tstamp = start + round(tstamp * 1000) / 1000
+
+                if emotion == "neutral":
+                    if res[0]["emotion"][emotion] > 80:
+                        faceSentimentTimeFrame[key][round_tstamp] = "neutral"
+                        faceEmotionTimeFrame[key][round_tstamp] = emotion
+
+                elif emotion in ["happy", "surprise"]:
+                    if res[0]["emotion"][emotion] > 80:
+                        faceSentimentTimeFrame[key][round_tstamp] = "positive"
+                        faceEmotionTimeFrame[key][round_tstamp] = emotion
+
+                elif emotion in ["angry", "sad", "fear"]:
+                    if res[0]["emotion"][emotion] > 80:
+                        faceSentimentTimeFrame[key][round_tstamp] = "negative"
+                        faceEmotionTimeFrame[key][round_tstamp] = emotion
 
             except: continue
 
@@ -86,15 +91,13 @@ def getAnalysis(videoPath):
 
     return result, faceEmotionTimeFrame, faceSentimentTimeFrame, duration
 
-audioResult, videoEmotions, videoSentiments, duration = getAnalysis("video5.mp4") #10min
+audioResult, videoEmotions, videoSentiments, duration = getAnalysis("video5.mkv") #10min
 
 pipe = pipeline("text-classification", model="cardiffnlp/twitter-roberta-base-sentiment-latest", device="cuda")
 
 def getFinalEmotionTimeFrame(videoTimeframe, duration):
 
-    doHourly = 0
     hours = 0
-    doMinute = 0
     minutes = 0
     lastKey = 0
     currKey = 1
@@ -108,34 +111,15 @@ def getFinalEmotionTimeFrame(videoTimeframe, duration):
         else: return ""
 
     if duration / 60 >= 1:
-        doMinute = 1
         minutes = round(duration / 60)
-    if doMinute and (duration / 60) / 60 >= 1:
-        doHourly = 1
-        hours = round(minutes // 60)
-
-    if doHourly:
-
-        for i in range(hours):
-            response[i] = {}
-            for j in range(60):
-                response[i][j] = {}
-                for k in range(60):
-                    currKey = ( i * 3600 ) + ( j * 60 ) + k+1
-                    response[i][j][k] = helper(currKey, lastKey)
-                    lastKey = currKey
-
-    elif doMinute:
-
         for i in range(minutes):
-            response[i] = {}
-            for j in range(60):
-                currKey = ( i * 60 ) + j+1
-                response[i][j] = helper(currKey, lastKey)
-                lastKey = currKey
+            response[min] = {j: helper((j * 60) + j + 1, (i - 1) * 60 + 60 + j) for j in range(60)}
 
+    elif (duration / 60) / 60 >= 1:
+        hours = round(minutes // 60)
+        for i in range(hours):
+            response[i] = {j : { k : helper((i * 3600) + (j * 60) + k + 1, lastKey := (i * 3600) + (j * 60) + k + 1) for k in range(60)} for j in range(60)}
     else:
-
         for i in range(60):
             currKey = i+1
             response[i] = helper(currKey, lastKey)
@@ -145,21 +129,19 @@ def getFinalEmotionTimeFrame(videoTimeframe, duration):
 
 audioEmotionTimeFrame = {}
 for segment in audioResult["segments"]:
-    emotion = pipe(segment["text"])[0]["label"]
-    for word in segment["words"]:
-        audioEmotionTimeFrame[word["start"]] = emotion
+    emotion = pipe(segment["text"])[0]["label"] # emotion value - POSITIVE, NEUTRAL, NEGATIVE
+    audioEmotionTimeFrame = { word["start"] : emotion for word in segment["words"]}
 
 videoResult = {}
 
+#TODO - check code again
 for key in videoSentiments:
-    for time in videoSentiments[key]:
-        videoResult[time] = videoSentiments[key][time]
+    videoResult = {time : videoSentiments[key][time] for time in videoSentiments[key]}
 
 videoEmotion = {}
 
 for key in videoEmotions:
-    for time in videoEmotions[key]:
-        videoEmotion[time] = videoEmotions[key][time]
+    videoEmotion = {time : videoEmotions[key][time] for time in videoEmotions[key]}
 
 videoSentimentResponse = getFinalEmotionTimeFrame(videoResult, duration)
 videoEmotionResponse = getFinalEmotionTimeFrame(videoEmotion, duration)
@@ -167,48 +149,19 @@ audioResponse = getFinalEmotionTimeFrame(audioEmotionTimeFrame, duration)
 
 mismatchTimeFrames = {}
 
-for tFrame in audioResponse:
+def set_mismatch_time_frames(path, audio_response, video_sentiment_response,video_emotion_response):
+    if audio_response != "" and video_sentiment_response != "" and audio_response != video_sentiment_response :
+        mismatchTimeFrames[path] = {"video": video_emotion_response, "audio": audio_response}
 
-    # if level 2 is present, can be minute or second
-    if isinstance(audioResponse[tFrame], dict):
+def check_tstamp(audio_response, video_sentiment_response,video_emotion_response, path=""):
+    
+    for key, value in audio_response.items():
+        path = f"{path}:{key:02}" if path else f"{key:02}"
 
-        for tFrame2 in audioResponse[tFrame]:
-
-            # if level 3 is present, it is for second
-            if isinstance(audioResponse[tFrame][tFrame2], dict):
-
-                for tFrame3 in audioResponse[tFrame][tFrame2]:
-
-                    # this is last level, check for audio and video
-                    if audioResponse[tFrame][tFrame2][tFrame3] != "" and videoSentimentResponse[tFrame][tFrame2][tFrame3] != "":
-
-                        if videoSentimentResponse[tFrame][tFrame2][tFrame3] != audioResponse[tFrame][tFrame2][tFrame3]:
-                            print(f"at {tFrame} hour {tFrame2} minute {tFrame3} second sentiment of video of {videoEmotionResponse[tFrame][tFrame2][tFrame3]} and sentiment of audio is {audioResponse[tFrame][tFrame2][tFrame3]}")
-                            key1 = tFrame if len(str(tFrame)) == 2 else '0'+ str(tFrame)
-                            key2 = tFrame2 if len(str(tFrame2)) == 2 else '0'+ str(tFrame2)
-                            key3 = tFrame3 if len(str(tFrame3)) == 2 else '0'+ str(tFrame3)
-                            mismatchTimeFrames[f"{key1}:{key2}:{key3}"] = {"video": videoEmotionResponse[tFrame][tFrame2][tFrame3], "audio": audioResponse[tFrame][tFrame2][tFrame3]}
-
-            # else check for audio and video
-            elif audioResponse[tFrame][tFrame2] != "" and videoSentimentResponse[tFrame][tFrame2] != "":
-
-                if videoSentimentResponse[tFrame][tFrame2] != audioResponse[tFrame][tFrame2]:
-                    print(f"at {tFrame} minute {tFrame2} second sentiment of video of {videoEmotionResponse[tFrame][tFrame2]} and sentiment of audio is {audioResponse[tFrame][tFrame2]}")
-                    key1 = tFrame if len(str(tFrame)) == 2 else '0'+ str(tFrame)
-                    key2 = tFrame2 if len(str(tFrame2)) == 2 else '0'+ str(tFrame2)
-                    mismatchTimeFrames[f"00:{key1}:{key2}"] = {"video": videoEmotionResponse[tFrame][tFrame2], "audio": audioResponse[tFrame][tFrame2]}
-
-    # else check for audio and video
-    elif audioResponse[tFrame] != "" and videoSentimentResponse[tFrame] != "":
-
-        if videoSentimentResponse[tFrame] != audioResponse[tFrame]:
-            print(f"at {tFrame} second sentiment of video of {videoEmotionResponse[tFrame]} and sentiment of audio is {audioResponse[tFrame]}")
-            key1 = tFrame if len(str(tFrame)) == 2 else '0'+ str(tFrame)
-            mismatchTimeFrames[f"00:00:{key1}"] = {"video": videoEmotionResponse[tFrame], "audio": audioResponse[tFrame]}
-
-mismatchTimeFrames
-
-from datetime import datetime
+        if isinstance(value, dict):
+            check_tstamp(audio_response=value, video_sentiment_response=video_sentiment_response[key], video_emotion_response=video_emotion_response[key], path=path)
+        else:
+            set_mismatch_time_frames(path=value, audio_response=value, video_sentiment_response=video_sentiment_response[key],video_emotion_response=video_emotion_response[key])
 
 def helper(jsonData):
 
@@ -238,7 +191,6 @@ def helper(jsonData):
 
     return result
 
-from datetime import datetime
 
 def groupAndFilter(mismatchTimeFrames):
 
@@ -246,28 +198,18 @@ def groupAndFilter(mismatchTimeFrames):
     sortedData = dict(sorted(mismatchTimeFrames.items(), key=lambda x: (x[1]['audio'], x[0])))
 
     # Initialize dictionaries to store groups for 'neutral', 'positive', and 'negative' audio values
-    neutralGroup = {}
-    positiveGroup = {}
-    negativeGroup = {}
-
-    lastMergedSeconds = {"neutral": None, "positive": None, "negative": None}
+    groups = {'neutral': {}, 'positive': {}, 'negative': {}}
 
     # Iterate through the sorted data to group items by 'audio' value
     for key, value in sortedData.items():
 
         audio_value = value['audio']
-        second = int(key.split(":")[2])
-        if lastMergedSeconds[audio_value] is None:
-            lastMergedSeconds[audio_value] = second
+        group = groups.get(audio_value, {})
+        group[key] = value
 
-        if audio_value == 'neutral':
-            currentGroup = neutralGroup
-        elif audio_value == 'positive':
-            currentGroup = positiveGroup
-        elif audio_value == 'negative':
-            currentGroup = negativeGroup
-        currentGroup[key] = value
-
+    neutralGroup = groups.get('neutral', {})
+    positiveGroup = groups.get('positive', {})
+    negativeGroup = groups.get('negative', {})
 
 
     def helper(jsonData):
@@ -290,22 +232,17 @@ def groupAndFilter(mismatchTimeFrames):
 
         return result
 
-    if neutralGroup and len(neutralGroup) > 2:
-        neutralGroup = helper(neutralGroup)
+    neutralGroup = helper(neutralGroup)
 
-    if positiveGroup and len(positiveGroup) > 2:
-        positiveGroup = helper(positiveGroup)
+    positiveGroup = helper(positiveGroup)
 
-    if negativeGroup and len(negativeGroup) > 2:
-        negativeGroup = helper(negativeGroup)
+    negativeGroup = helper(negativeGroup)
 
     # Create a dictionary to store filtered groups
     filteredGroups = dict()
 
     # Filter and store groups with length > 8
-    for group in [(neutralGroup, 'neutral'), (positiveGroup, 'positive'), (negativeGroup, 'negative')]:
-        if len(group[0]) >= 5:
-            filteredGroups[group[1]] = group[0]
+    filteredGroups = {group[1] : group[0] for group in [(neutralGroup, 'neutral'), (positiveGroup, 'positive'), (negativeGroup, 'negative')] if len(group[0]) >= 5}
 
     return filteredGroups
 
@@ -505,27 +442,20 @@ lastMergedSeconds = {"angry": None, "sad": None, "fear": None, "happy": None, "s
 for key, value in sorted_data.items():
     video_category = value['video']
     if video_category in groups:
-        if current_group is None or current_group != video_category:
-            current_group = video_category
         if groups[video_category]:
             second = int(key.split(":")[2])
 
             if abs(lastMergedSeconds[video_category] - second) <= 2:
                 groups[video_category][-1].append((key, value))
                 lastMergedSeconds[video_category] = int(key.split(":")[2])
-            else:
-                if len(groups[video_category][-1]) < 5:
+            elif len(groups[video_category][-1]) < 5:
                     groups[video_category][-1] = [(key, value)]
-                else:
-                    groups[video_category].append([(key, value)])
+            else:
+                groups[video_category].append([(key, value)])
                 lastMergedSeconds[video_category] = int(key.split(":")[2])
         else:
             groups[video_category].append([(key, value)])
             lastMergedSeconds[video_category] = int(key.split(":")[2])
-
-    else:
-        current_group = None
-
 
 final_groups = {}
 # Print the grouped data
@@ -534,10 +464,7 @@ for category, group_values in groups.items():
         final_groups[category] = []
         for group in group_values:
             if len(group) >= 5:
-                doc = {}
-                for key, value in group:
-                    doc[key] = value
-                final_groups[category].append(doc)
+                final_groups[category].append({key:value for key, value in group})
 
 final_groups
 
@@ -562,8 +489,6 @@ def create_grouped_dict(data):
     for key, value in sorted_data.items():
         video_category = value['video']
         if video_category in groups:
-            if current_group is None or current_group != video_category:
-                current_group = video_category
             if groups[video_category]:
                 second = int(key.split(":")[2])
                 if abs(lastMergedSeconds[video_category] - second) <= 3:
@@ -576,9 +501,6 @@ def create_grouped_dict(data):
                 groups[video_category].append([(key, value)])
                 lastMergedSeconds[video_category] = int(key.split(":")[2])
 
-        else:
-            current_group = None
-
     # print(groups)
     # Create a dictionary of groups with length > 5
     final_groups = {}
@@ -588,10 +510,8 @@ def create_grouped_dict(data):
             final_groups[category] = []
             for group in group_values:
                 if len(group) >= 5:
-                    doc = {}
-                    for key, value in group:
-                        doc[key] = value
-                    final_groups[category].append(doc)
+                    final_groups[category].append({key:value for key, value in group})
+
 
     return final_groups
 
